@@ -20,6 +20,7 @@ import (
 	"math/rand"
 
 	"github.com/coreos/go-oidc"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
@@ -272,11 +273,37 @@ func (a *app) applyAuth(idToken, refreshToken string) error {
 	defer os.Remove(tmp.Name())
 	clientcmd.WriteToFile(*config, tmp.Name())
 
+	fi, e := os.Stat(tmp.Name())
+	if e != nil {
+		return e
+	}
+
+	if fi.Size() > 4000 {
+		log.Warnf("ClientID Size %d", len(a.ClientID))
+		log.Warnf("ClientSecret Size %d", len(a.ClientSecret))
+		log.Warnf("idToken Size %d", len(idToken))
+		log.Warnf("Issuer Size %d", len(a.Issuer))
+		log.Warnf("refreshToken Size %d", len(refreshToken))
+		log.Warnf("name Size %d", len(a.name))
+		log.Warnf("Server Size %d", len(a.Server))
+		log.Warnf("Total Size %d", fi.Size())
+		return errors.New("unexpected large file size from Okta response please open a issue with the maintainer and supply the command output")
+	}
+
 	usr, err := user.Current()
 	if err != nil {
 		return err
 	}
 	kubeConfigPath := filepath.Join(usr.HomeDir, ".kube", "config")
+
+	fi, e = os.Stat(kubeConfigPath)
+	if e != nil {
+		return e
+	}
+
+	if fi.Size() > 2000000 {
+		return fmt.Errorf("refusing to merge with unexpectidly large kubeconfig at %s of size %d", kubeConfigPath, fi.Size())
+	}
 
 	loadingRules := clientcmd.ClientConfigLoadingRules{
 		Precedence: []string{tmp.Name(), kubeConfigPath},
