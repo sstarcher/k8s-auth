@@ -328,18 +328,25 @@ func randomString(length int) string {
 
 func openBrowser(url string) {
 	command := ""
+	var args []string
+
 	switch os := runtime.GOOS; os {
 	case "darwin":
 		command = "open"
 	case "linux":
 		command = "xdg-open"
+	case "windows":
+		command = "rundll32"
+		args = append(args, "url.dll,FileProtocolHandler")
 	default:
 		fmt.Println("unable to detect OS")
 	}
 
+	args = append(args, url)
+
 	var err error
 	if command != "" {
-		cmd := exec.Command(command, url)
+		cmd := exec.Command(command, args...)
 		err := cmd.Start()
 		if err != nil {
 			fmt.Printf("unable to open browser %v\n", err)
