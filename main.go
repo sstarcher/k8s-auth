@@ -44,7 +44,7 @@ type Cluster struct {
 	OfflineAccess bool
 }
 
-// Wtf we need to reference
+// Claim we need to reference
 type Claim struct {
 	Expiration int64 `json:"exp"`
 }
