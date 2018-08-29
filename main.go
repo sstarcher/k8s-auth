@@ -44,6 +44,11 @@ type Cluster struct {
 	OfflineAccess bool
 }
 
+// Claim we need to reference
+type Claim struct {
+	Expiration int64 `json:"exp"`
+}
+
 type app struct {
 	Cluster
 
@@ -51,63 +56,71 @@ type app struct {
 	provider *oidc.Provider
 }
 
-func cmd() *cobra.Command {
-	var a app
-	var config map[string]Cluster
-	c := cobra.Command{
-		Use:   "k8s-auth",
-		Short: "A OpenID client for out of band authorization.",
-		Long:  "k8s-auth NAME",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			a.name = args[0]
+var (
+	version    = "dev"
+	commit     = "none"
+	date       = "unknown"
+	configFile = ".k8s-auth"
+)
 
-			err := viper.Unmarshal(&config)
-			if err != nil {
-				return err
-			}
+var a app
+var config map[string]Cluster
+var rootCmd = &cobra.Command{
+	Use:   "k8s-auth",
+	Short: "A OpenID client for out of band authorization.",
+	Long:  "k8s-auth NAME",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a.name = args[0]
 
-			if val, ok := config[a.name]; ok {
-				a.Cluster = val
-			}
+		err := viper.Unmarshal(&config)
+		if err != nil {
+			return err
+		}
 
-			if a.Issuer == "" {
-				a.Issuer = "http://127.0.0.1:5556"
-			}
+		if val, ok := config[a.name]; ok {
+			a.Cluster = val
+		}
 
-			if a.ClientID == "" {
-				a.ClientID = "kubernetes"
-			}
+		if a.Issuer == "" {
+			a.Issuer = "http://127.0.0.1:5556"
+		}
 
-			if a.ClientSecret == "" {
-				a.ClientSecret = "cli-secret"
-			}
+		if a.ClientID == "" {
+			a.ClientID = "kubernetes"
+		}
 
-			ctx := oidc.ClientContext(context.Background(), &http.Client{})
-			a.provider, err = oidc.NewProvider(ctx, a.Issuer)
-			if err != nil {
-				return fmt.Errorf("failed to query provider %q: %v", a.Issuer, err)
-			}
+		if a.ClientSecret == "" {
+			a.ClientSecret = "cli-secret"
+		}
 
-			a.login()
-			code, err := a.readCode()
-			if err != nil {
-				return err
-			}
+		if a.checkAuth() {
+			switchKubeContext(a.name)
+			return nil
+		}
 
-			token, refresh, err := a.fetchToken(code)
-			if err != nil {
-				return err
-			}
-			return a.applyAuth(token, refresh)
-		},
-	}
+		ctx := oidc.ClientContext(context.Background(), &http.Client{})
+		a.provider, err = oidc.NewProvider(ctx, a.Issuer)
+		if err != nil {
+			return fmt.Errorf("failed to query provider %q: %v", a.Issuer, err)
+		}
 
-	return &c
+		a.login()
+		code, err := a.readCode()
+		if err != nil {
+			return err
+		}
+
+		token, refresh, err := a.fetchToken(code)
+		if err != nil {
+			return err
+		}
+		return a.applyAuth(token, refresh)
+	},
 }
 
 func main() {
-	if err := cmd().Execute(); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(2)
 	}
@@ -118,16 +131,16 @@ func init() {
 }
 
 func initConfig() {
-	viper.SetConfigName(".k8s-auth")
+	viper.SetConfigName(configFile)
 	viper.AddConfigPath("$HOME")
 	viper.AddConfigPath(".")
 	viper.SetEnvPrefix("K8S_AUTH")
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err == nil {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
+		log.Debugf("Using config file:", viper.ConfigFileUsed())
 	} else {
-		fmt.Printf("%v", err)
+		log.Errorf("%v", err)
 	}
 }
 
@@ -174,7 +187,7 @@ func (a *app) login() {
 
 	offline, err := a.offlineSupported()
 	if err != nil {
-		fmt.Printf("error processing offline support %v", err)
+		log.Infof("error processing offline support %v", err)
 	}
 
 	var url string
@@ -192,7 +205,7 @@ func (a *app) login() {
 
 func (a *app) readCode() (string, error) {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Enter the code returned to you: ")
+	log.Info("Enter the code returned to you: ")
 	code, err := reader.ReadString('\n')
 	if err != nil {
 		return "", err
@@ -231,7 +244,18 @@ func (a *app) fetchToken(code string) (string, string, error) {
 	buff := new(bytes.Buffer)
 	json.Indent(buff, []byte(claims), "", "  ")
 
-	fmt.Printf("%s\n", buff.Bytes())
+	data := buff.Bytes()
+
+	file, err := cacheFile(a.name)
+	if err != nil {
+		return "", "", err
+	}
+
+	err = ioutil.WriteFile(file, data, 0644)
+	if err != nil {
+		return "", "", err
+	}
+
 	return rawIDToken, token.RefreshToken, nil
 }
 
@@ -266,6 +290,95 @@ func (a *app) applyAuth(idToken, refreshToken string) error {
 		},
 	}
 
+	return updateKubeConfig(config)
+}
+
+func (a *app) checkAuth() bool {
+	file, err := cacheFile(a.name)
+	if err != nil {
+		log.Error(err)
+		return false
+	}
+
+	jsonFile, err := os.Open(file)
+	if err != nil {
+		return false
+	}
+	defer jsonFile.Close()
+
+	b, _ := ioutil.ReadAll(jsonFile)
+
+	var claim Claim
+	err = json.Unmarshal(b, &claim)
+	if err != nil {
+		log.Error(err)
+		return false
+	}
+
+	result := time.Unix(claim.Expiration, 0)
+	return time.Now().Before(result)
+}
+
+func randomString(length int) string {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, length)
+	for i := range result {
+		result[i] = chars[r.Intn(len(chars))]
+	}
+	return string(result)
+}
+
+func openBrowser(url string) {
+	command := ""
+	var args []string
+
+	switch os := runtime.GOOS; os {
+	case "darwin":
+		command = "open"
+	case "linux":
+		command = "xdg-open"
+	case "windows":
+		command = "rundll32"
+		args = append(args, "url.dll,FileProtocolHandler")
+	default:
+		log.Info("unable to detect OS")
+	}
+
+	args = append(args, url)
+
+	var err error
+	if command != "" {
+		cmd := exec.Command(command, args...)
+		err := cmd.Start()
+		if err != nil {
+			log.Infof("unable to open browser %v\n", err)
+		}
+	}
+
+	if err != nil || command == "" {
+		log.Infof("open this url in your browser %s\n", url)
+	}
+}
+
+func cacheFile(name string) (string, error) {
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(usr.HomeDir, configFile+"-"+name), nil
+}
+
+func switchKubeContext(name string) error {
+	config := &clientcmdapi.Config{
+		CurrentContext: name,
+	}
+
+	return updateKubeConfig(config)
+}
+
+func updateKubeConfig(config *clientcmdapi.Config) error {
 	tmp, err := ioutil.TempFile("", "")
 	if err != nil {
 		return err
@@ -278,12 +391,10 @@ func (a *app) applyAuth(idToken, refreshToken string) error {
 		return e
 	}
 
-	if fi.Size() > 4000 {
+	if fi.Size() > 3000 {
 		log.Warnf("ClientID Size %d", len(a.ClientID))
 		log.Warnf("ClientSecret Size %d", len(a.ClientSecret))
-		log.Warnf("idToken Size %d", len(idToken))
 		log.Warnf("Issuer Size %d", len(a.Issuer))
-		log.Warnf("refreshToken Size %d", len(refreshToken))
 		log.Warnf("name Size %d", len(a.name))
 		log.Warnf("Server Size %d", len(a.Server))
 		log.Warnf("Total Size %d", fi.Size())
@@ -313,47 +424,16 @@ func (a *app) applyAuth(idToken, refreshToken string) error {
 		return err
 	}
 
-	return clientcmd.WriteToFile(*mergedConfig, kubeConfigPath)
-}
+	err = clientcmd.WriteToFile(*mergedConfig, kubeConfigPath)
 
-func randomString(length int) string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	result := make([]byte, length)
-	for i := range result {
-		result[i] = chars[r.Intn(len(chars))]
-	}
-	return string(result)
-}
-
-func openBrowser(url string) {
-	command := ""
-	var args []string
-
-	switch os := runtime.GOOS; os {
-	case "darwin":
-		command = "open"
-	case "linux":
-		command = "xdg-open"
-	case "windows":
-		command = "rundll32"
-		args = append(args, "url.dll,FileProtocolHandler")
-	default:
-		fmt.Println("unable to detect OS")
+	fi, e = os.Stat(kubeConfigPath)
+	if e != nil {
+		return e
 	}
 
-	args = append(args, url)
-
-	var err error
-	if command != "" {
-		cmd := exec.Command(command, args...)
-		err := cmd.Start()
-		if err != nil {
-			fmt.Printf("unable to open browser %v\n", err)
-		}
+	if fi.Size() > 2000000 {
+		return fmt.Errorf("After writing file the size is to large... %s of size %d", kubeConfigPath, fi.Size())
 	}
 
-	if err != nil || command == "" {
-		fmt.Printf("open this url in your browser %s\n", url)
-	}
+	return err
 }
