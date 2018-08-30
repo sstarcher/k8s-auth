@@ -412,7 +412,7 @@ func updateKubeConfig(config *clientcmdapi.Config) error {
 		return e
 	}
 
-	if fi.Size() > 2000000 {
+	if fi.Size() > 20000000 {
 		return fmt.Errorf("refusing to merge with unexpectidly large kubeconfig at %s of size %d", kubeConfigPath, fi.Size())
 	}
 
@@ -431,7 +431,7 @@ func updateKubeConfig(config *clientcmdapi.Config) error {
 		return e
 	}
 
-	if fi.Size() > 2000000 {
+	if fi.Size() > 20000000 {
 		return fmt.Errorf("After writing file the size is to large... %s of size %d", kubeConfigPath, fi.Size())
 	}
 
