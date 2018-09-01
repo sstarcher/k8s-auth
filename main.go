@@ -316,7 +316,21 @@ func (a *app) checkAuth() bool {
 	}
 
 	result := time.Unix(claim.Expiration, 0)
-	return time.Now().Before(result)
+	if time.Now().Before(result) {
+
+		cfg, err := loadKubeConfig()
+		if err != nil {
+			log.Error(err)
+			return false
+		}
+
+		for k := range cfg.Contexts {
+			if k == a.name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func randomString(length int) string {
@@ -386,34 +400,9 @@ func updateKubeConfig(config *clientcmdapi.Config) error {
 	defer os.Remove(tmp.Name())
 	clientcmd.WriteToFile(*config, tmp.Name())
 
-	fi, e := os.Stat(tmp.Name())
-	if e != nil {
-		return e
-	}
-
-	if fi.Size() > 3000 {
-		log.Warnf("ClientID Size %d", len(a.ClientID))
-		log.Warnf("ClientSecret Size %d", len(a.ClientSecret))
-		log.Warnf("Issuer Size %d", len(a.Issuer))
-		log.Warnf("name Size %d", len(a.name))
-		log.Warnf("Server Size %d", len(a.Server))
-		log.Warnf("Total Size %d", fi.Size())
-		return errors.New("unexpected large file size from Okta response please open a issue with the maintainer and supply the command output")
-	}
-
-	usr, err := user.Current()
+	kubeConfigPath, err := kubeConfigPath()
 	if err != nil {
 		return err
-	}
-	kubeConfigPath := filepath.Join(usr.HomeDir, ".kube", "config")
-
-	fi, e = os.Stat(kubeConfigPath)
-	if e != nil {
-		return e
-	}
-
-	if fi.Size() > 20000000 {
-		return fmt.Errorf("refusing to merge with unexpectidly large kubeconfig at %s of size %d", kubeConfigPath, fi.Size())
 	}
 
 	loadingRules := clientcmd.ClientConfigLoadingRules{
@@ -424,16 +413,18 @@ func updateKubeConfig(config *clientcmdapi.Config) error {
 		return err
 	}
 
-	err = clientcmd.WriteToFile(*mergedConfig, kubeConfigPath)
+	return clientcmd.WriteToFile(*mergedConfig, kubeConfigPath)
+}
 
-	fi, e = os.Stat(kubeConfigPath)
-	if e != nil {
-		return e
+func kubeConfigPath() (string, error) {
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(usr.HomeDir, ".kube", "config"), nil
+}
 
-	if fi.Size() > 20000000 {
-		return fmt.Errorf("After writing file the size is to large... %s of size %d", kubeConfigPath, fi.Size())
-	}
-
-	return err
+func loadKubeConfig() (clientcmdapi.Config, error) {
+	loader := clientcmd.NewDefaultClientConfigLoadingRules()
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loader, &clientcmd.ConfigOverrides{}).RawConfig()
 }
