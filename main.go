@@ -54,6 +54,7 @@ type app struct {
 
 	name     string
 	provider *oidc.Provider
+	force    bool
 }
 
 var (
@@ -94,7 +95,7 @@ var rootCmd = &cobra.Command{
 			a.ClientSecret = "cli-secret"
 		}
 
-		if a.checkAuth() {
+		if !a.force && a.checkAuth() {
 			switchKubeContext(a.name)
 			return nil
 		}
@@ -128,6 +129,7 @@ func main() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
+	rootCmd.PersistentFlags().BoolVar(&a.force, "force", false, "force update new credentials")
 }
 
 func initConfig() {
