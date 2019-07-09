@@ -52,9 +52,10 @@ type Claim struct {
 type app struct {
 	Cluster
 
-	name     string
-	provider *oidc.Provider
-	force    bool
+	name        string
+	provider    *oidc.Provider
+	force       bool
+	skipBrowser bool
 }
 
 var (
@@ -130,6 +131,7 @@ func main() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().BoolVar(&a.force, "force", false, "force update new credentials")
+	rootCmd.PersistentFlags().BoolVar(&a.skipBrowser, "skip-browser", false, "skip opening the web browser")
 }
 
 func initConfig() {
@@ -202,7 +204,7 @@ func (a *app) login() {
 		url = a.oauth2Config(scopes).AuthCodeURL(state, oauth2.AccessTypeOffline)
 	}
 
-	openBrowser(url)
+	openBrowser(url, a.skipBrowser)
 }
 
 func (a *app) readCode() (string, error) {
@@ -345,20 +347,22 @@ func randomString(length int) string {
 	return string(result)
 }
 
-func openBrowser(url string) {
+func openBrowser(url string, skipBrowser bool) {
 	command := ""
 	var args []string
 
-	switch os := runtime.GOOS; os {
-	case "darwin":
-		command = "open"
-	case "linux":
-		command = "xdg-open"
-	case "windows":
-		command = "rundll32"
-		args = append(args, "url.dll,FileProtocolHandler")
-	default:
-		log.Info("unable to detect OS")
+	if !skipBrowser {
+		switch os := runtime.GOOS; os {
+		case "darwin":
+			command = "open"
+		case "linux":
+			command = "xdg-open"
+		case "windows":
+			command = "rundll32"
+			args = append(args, "url.dll,FileProtocolHandler")
+		default:
+			log.Info("unable to detect OS")
+		}
 	}
 
 	args = append(args, url)
