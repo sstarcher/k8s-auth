@@ -1,4 +1,6 @@
-# Kubernetes Authenticator
+# Kubernetes Authenticator - DEPRECATED
+
+I recommend the use of [kubelogin](https://github.com/int128/kubelogin).
 
 [![CircleCI](https://circleci.com/gh/sstarcher/k8s-auth.svg?style=shield)](https://circleci.com/gh/sstarcher/k8s-auth)
 [![GitHub release](https://img.shields.io/github/release/sstarcher/k8s-auth.svg)](https://github.com/sstarcher/k8s-auth/releases)
